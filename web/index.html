@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Medidor DC · Monitoreo MQTT</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root{
+    --bg:#F3F1EC; --panel:#FBFAF7; --line:#DDD8CE; --ink:#1B232B; --muted:#5B6670;
+    --navy:#14202B; --orange:#E07A1F; --orange-d:#B85F0E; --blue:#2F7DD1; --blue-d:#1F5FA6;
+    --green:#2E8B57; --green-bg:#E3F3EA; --amber-bg:#FDEFD9; --red:#C0392B; --red-bg:#FBE3E0;
+    --radius:14px; --mono:'JetBrains Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5}
+  header{background:var(--navy);color:#F3F1EC;padding:18px 28px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  header h1{font-size:20px;margin:0;font-weight:700;letter-spacing:.01em}
+  header .sub{color:#A9B4BE;font-size:13px}
+  .chips{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .chip{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;background:#22313F;font-size:13px;color:#DCE3EA}
+  .dot{width:9px;height:9px;border-radius:50%;background:#7A8691}
+  .dot.on{background:#3DD68C}.dot.off{background:#E5554A}.dot.wait{background:#F2B33D}
+  main{max-width:1320px;margin:0 auto;padding:24px 28px 48px;display:grid;gap:20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+  .card h2{font-size:15px;margin:0 0 14px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  details.card summary{cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;gap:10px}
+  details.card summary::-webkit-details-marker{display:none}
+  details.card summary .hint{font-weight:400;color:var(--muted);font-size:13px}
+  .conn{display:grid;grid-template-columns:2fr 1fr auto;gap:12px;margin-top:16px;align-items:end}
+  label{display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--muted);font-weight:500}
+  input{font:inherit;color:var(--ink);padding:9px 11px;border:1px solid var(--line);border-radius:9px;background:#fff;min-width:0}
+  input:focus{outline:2px solid var(--blue);outline-offset:-1px;border-color:var(--blue)}
+  .btns{display:flex;gap:8px;flex-wrap:wrap}
+  button{font:inherit;font-weight:600;font-size:14px;border:1px solid transparent;border-radius:9px;padding:9px 16px;cursor:pointer;transition:filter .15s,background .15s}
+  button:hover{filter:brightness(.95)} button:disabled{opacity:.45;cursor:not-allowed}
+  .b-pri{background:var(--navy);color:#fff}
+  .b-acc{background:var(--orange);color:#1B232B}
+  .b-sec{background:#fff;border-color:var(--line);color:var(--ink)}
+  .b-red{background:var(--red);color:#fff}
+  .b-grn{background:var(--green);color:#fff}
+  .note{font-size:13px;color:var(--muted);margin:10px 0 0}
+  .banner{display:flex;align-items:center;gap:18px;padding:16px 20px;border-radius:var(--radius);border:2px solid var(--line);background:var(--panel)}
+  .banner .tag{font-family:var(--mono);font-weight:700;font-size:22px;letter-spacing:.04em}
+  .banner .why{color:var(--muted)}
+  .banner .btns{margin-left:auto}
+  .banner.NORMAL{border-color:var(--green);background:var(--green-bg)} .banner.NORMAL .tag{color:var(--green)}
+  .banner.ALARMA{border-color:var(--orange);background:var(--amber-bg)} .banner.ALARMA .tag{color:var(--orange-d)}
+  .banner.CORTE{border-color:var(--red);background:var(--red-bg)} .banner.CORTE .tag{color:var(--red)}
+  .banner.ALARMA .tag,.banner.CORTE .tag{animation:pulse 1s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.45}}
+  @media (prefers-reduced-motion:reduce){.banner .tag{animation:none!important}}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;position:relative;overflow:hidden}
+  .kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--c,var(--navy))}
+  .kpi .lbl{font-size:13px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+  .kpi .val{font-family:var(--mono);font-size:40px;font-weight:700;line-height:1.15;margin-top:6px}
+  .kpi .val small{font-size:18px;color:var(--muted);margin-left:4px}
+  .kpi .ext{font-size:13px;color:var(--muted);margin-top:4px}
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:20px;align-items:start}
+  .charts{display:grid;gap:20px}
+  .chart-head{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+  .chart-head h2{margin:0}
+  .seg{margin-left:auto;display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#fff}
+  .seg button{border-radius:0;padding:6px 12px;background:transparent;color:var(--muted);font-size:13px}
+  .seg button.act{background:var(--navy);color:#fff}
+  .chart-box{position:relative;height:220px}
+  .side{display:grid;gap:20px}
+  .lims{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .lims .full{grid-column:1/-1}
+  .cur{font-size:12px;color:var(--muted);font-weight:400}
+  .actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .log{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+  .log li{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:13px;padding:8px 10px;border-radius:9px;background:#fff;border:1px solid var(--line)}
+  .log .t{font-family:var(--mono);color:var(--muted);font-size:12px}
+  .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;text-transform:uppercase;letter-spacing:.05em;justify-self:start}
+  .badge.corte{background:var(--red-bg);color:var(--red)} .badge.alarma{background:var(--amber-bg);color:var(--orange-d)}
+  .badge.normal,.badge.rearme{background:var(--green-bg);color:var(--green)}
+  .badge.info,.badge.config,.badge.carga,.badge.conexion{background:#E3EEF9;color:var(--blue-d)}
+  .badge.error{background:var(--red-bg);color:var(--red)}
+  .log .m{grid-column:1/-1}
+  .empty{color:var(--muted);font-size:13px}
+  .help{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+  .help h3{font-size:15px;margin:0 0 8px}
+  .help ol,.help ul{margin:0;padding-left:20px;font-size:14px}
+  .help li{margin-bottom:6px}
+  code{font-family:var(--mono);font-size:12.5px;background:#EDEAE3;padding:1px 6px;border-radius:5px}
+  .toast{position:fixed;right:20px;bottom:20px;background:var(--navy);color:#fff;padding:12px 18px;border-radius:10px;font-size:14px;opacity:0;transform:translateY(10px);transition:all .25s;pointer-events:none;max-width:360px}
+  .toast.show{opacity:1;transform:none}
+  .err{color:var(--red);font-size:13px;margin-top:8px;min-height:1em}
+  @media (max-width:1050px){.grid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.help{grid-template-columns:1fr}}
+  @media (max-width:640px){.conn{grid-template-columns:1fr}.kpi .val{font-size:30px}main{padding:16px}.banner{flex-wrap:wrap}.banner .btns{margin-left:0}}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Medidor DC con protecciones</h1>
+    <div class="sub">ESP32 + INA219 · Monitoreo en tiempo real por MQTT</div>
+  </div>
+  <div class="chips">
+    <span class="chip"><span class="dot" id="dBroker"></span><span id="tBroker">Broker: desconectado</span></span>
+    <span class="chip"><span class="dot" id="dEquipo"></span><span id="tEquipo">Equipo: sin datos</span></span>
+    <span class="chip" id="cRssi" title="Intensidad de la señal WiFi del ESP32">WiFi: —</span>
+  </div>
+</header>
+
+<main>
+  <!-- CONEXIÓN -->
+  <details class="card" id="panelConn" open>
+    <summary>Conexión <span class="hint" id="connHint">— configure el broker y el ID del equipo</span></summary>
+    <div class="conn">
+      <label>Broker MQTT (WebSocket seguro)
+        <input id="inUrl" value="wss://broker.hivemq.com:8884/mqtt" spellcheck="false">
+      </label>
+      <label>ID del equipo (igual que DEVICE_ID en el ESP32)
+        <input id="inId" value="skc-ina219-x7k" spellcheck="false">
+      </label>
+      <div class="btns">
+        <button class="b-pri" id="btnConn">Conectar</button>
+        <button class="b-sec" id="btnDemo" title="Simula datos sin el hardware">Modo demo</button>
+      </div>
+    </div>
+    <p class="err" id="connErr"></p>
+    <p class="note">Tópico base: <code id="lblBase">medidordc/medidor-01</code> · El broker público de HiveMQ no necesita cuenta; use un ID único para que nadie más publique en su tópico.</p>
+  </details>
+
+  <!-- ESTADO -->
+  <section class="banner" id="banner">
+    <span class="tag" id="estTag">— — —</span>
+    <span class="why" id="estWhy">Esperando datos del medidor…</span>
+    <div class="btns">
+      <button class="b-grn" id="btnRearmar" disabled>Rearmar</button>
+      <button class="b-sec" id="btnSilenciar" disabled>Silenciar</button>
+    </div>
+  </section>
+
+  <!-- VALORES -->
+  <section class="kpis">
+    <div class="kpi" style="--c:var(--blue)">
+      <div class="lbl">Voltaje</div>
+      <div class="val"><span id="kV">—</span><small>V</small></div>
+      <div class="ext" id="kVx">Límites: —</div>
+    </div>
+    <div class="kpi" style="--c:var(--orange)">
+      <div class="lbl">Corriente</div>
+      <div class="val"><span id="kI">—</span><small>A</small></div>
+      <div class="ext" id="kIx">Máx. registrada: —</div>
+    </div>
+    <div class="kpi" style="--c:var(--navy)">
+      <div class="lbl">Potencia</div>
+      <div class="val"><span id="kP">—</span><small>W</small></div>
+      <div class="ext" id="kPx">Promedio (ventana): —</div>
+    </div>
+    <div class="kpi" style="--c:var(--green)">
+      <div class="lbl">Energía</div>
+      <div class="val"><span id="kE">—</span><small>Wh</small></div>
+      <div class="ext" id="kEx">Carga: —</div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <!-- GRÁFICAS -->
+    <section class="charts">
+      <div class="card">
+        <div class="chart-head">
+          <h2>Corriente</h2>
+          <div class="seg" id="segWin">
+            <button data-w="60">1 min</button>
+            <button data-w="300" class="act">5 min</button>
+            <button data-w="900">15 min</button>
+          </div>
+          <button class="b-sec" id="btnPausa" style="padding:6px 12px;font-size:13px">Pausar</button>
+        </div>
+        <div class="chart-box"><canvas id="chI" aria-label="Gráfica de corriente en el tiempo"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="chart-head"><h2>Voltaje</h2></div>
+        <div class="chart-box"><canvas id="chV" aria-label="Gráfica de voltaje en el tiempo"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="chart-head"><h2>Potencia</h2></div>
+        <div class="chart-box"><canvas id="chP" aria-label="Gráfica de potencia en el tiempo"></canvas></div>
+      </div>
+    </section>
+
+    <!-- LATERAL -->
+    <aside class="side">
+      <div class="card">
+        <h2>Límites de protección</h2>
+        <form class="lims" id="formLim" novalidate>
+          <label>Alarma corriente (A) <span class="cur" id="cIa">actual: —</span>
+            <input type="number" step="0.01" min="0.01" max="3.2" id="inIa" required>
+          </label>
+          <label>Corte corriente (A) <span class="cur" id="cIc">actual: —</span>
+            <input type="number" step="0.01" min="0.01" max="3.2" id="inIc" required>
+          </label>
+          <label>Voltaje mínimo (V) <span class="cur" id="cVmin">actual: —</span>
+            <input type="number" step="0.1" min="0" max="26" id="inVmin" required>
+          </label>
+          <label>Voltaje máximo (V) <span class="cur" id="cVmax">actual: —</span>
+            <input type="number" step="0.1" min="0" max="26" id="inVmax" required>
+          </label>
+          <div class="full">
+            <button class="b-acc" type="submit" style="width:100%">Enviar al medidor</button>
+            <p class="err" id="limErr"></p>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Acciones</h2>
+        <div class="actions">
+          <button class="b-grn" id="btnCargaOn">Conectar carga</button>
+          <button class="b-red" id="btnCargaOff">Desconectar carga</button>
+          <button class="b-sec" id="btnResetE" style="grid-column:1/-1">Reiniciar energía y máximo</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Registro de eventos</h2>
+        <ul class="log" id="log"><li class="empty" style="display:block;border:none;background:none">Sin eventos todavía.</li></ul>
+      </div>
+    </aside>
+  </div>
+
+  <!-- INSTRUCCIONES -->
+  <section class="card">
+    <h2>Cómo usar esta página</h2>
+    <div class="help">
+      <div>
+        <h3>1. Prepare el ESP32</h3>
+        <ol>
+          <li>En <code>src/principal/main.cpp</code> ponga su red en <code>WIFI_SSID</code> y <code>WIFI_PASS</code>.</li>
+          <li>Cambie <code>DEVICE_ID</code> por un nombre único, por ejemplo <code>medidor-sofia-01</code>.</li>
+          <li>En PlatformIO elija <code>env:principal</code> y suba el programa.</li>
+        </ol>
+      </div>
+      <div>
+        <h3>2. Conecte la página</h3>
+        <ol>
+          <li>Escriba el mismo ID del equipo arriba y pulse <b>Conectar</b>.</li>
+          <li>El indicador <b>Equipo</b> pasa a verde cuando llegan datos (1 por segundo).</li>
+          <li>Sin hardware, pulse <b>Modo demo</b> para ver la página funcionando con datos simulados.</li>
+        </ol>
+      </div>
+      <div>
+        <h3>3. Alarmas y límites</h3>
+        <ul>
+          <li><b>ALARMA</b>: corriente sobre el límite de alarma o voltaje bajo. Suena el buzzer; la carga sigue.</li>
+          <li><b>CORTE</b>: corriente o voltaje sobre el límite de corte. La carga se desconecta hasta <b>Rearmar</b> (aquí o con el botón físico).</li>
+          <li>Los límites enviados quedan guardados en el ESP32 aunque se apague.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- Utilidades ----------
+  const $ = (id) => document.getElementById(id);
+  const fmt = (n, d) => (n == null || isNaN(n)) ? '—'
+    : Number(n).toLocaleString('es-CO', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const hora = (d = new Date()) => d.toLocaleTimeString('es-CO', { hour12: false });
+  const store = {
+    get(k, def) { try { return localStorage.getItem(k) ?? def; } catch { return def; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } }
+  };
+  let toastT;
+  function toast(msg) {
+    const t = $('toast'); t.textContent = msg; t.classList.add('show');
+    clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 3000);
+  }
+
+  // ---------- Estado de la página ----------
+  const MAX_PUNTOS = 900;                 // 15 min a 1 dato por segundo
+  const serie = { t: [], v: [], i: [], p: [] };
+  let ventana = 300, pausado = false;
+  let client = null, demo = null, base = '';
+  let ultimoDato = 0, config = null, ultimo = null;
+
+  $('inUrl').value = store.get('md_url', $('inUrl').value);
+  $('inId').value = store.get('md_id', $('inId').value);
+  const actualizarBase = () => { base = 'medidordc/' + $('inId').value.trim(); $('lblBase').textContent = base; };
+  actualizarBase();
+  $('inId').addEventListener('input', actualizarBase);
+
+  // ---------- Gráficas ----------
+  if (typeof Chart === 'undefined') {
+    $('connErr').textContent = 'No se pudieron cargar las librerías. Revise su conexión a internet y recargue la página.';
+  }
+  const lineaLimite = (label, color) => ({
+    label, data: [], borderColor: color, borderWidth: 1.5, borderDash: [6, 5],
+    pointRadius: 0, fill: false, tension: 0
+  });
+  function crearGrafica(id, label, color, fondo, unidad, limites) {
+    return new Chart($(id), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          { label, data: [], borderColor: color, backgroundColor: fondo, borderWidth: 2,
+            pointRadius: 0, fill: true, tension: 0.25 },
+          ...limites.map(([l, c]) => lineaLimite(l, c))
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: limites.length > 0, position: 'top', align: 'end',
+            labels: { boxWidth: 14, boxHeight: 2, font: { size: 12 }, color: '#5B6670' } },
+          tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmt(c.parsed.y, unidad === 'A' ? 3 : 2)} ${unidad}` } }
+        },
+        scales: {
+          x: { ticks: { maxTicksLimit: 7, color: '#5B6670', font: { size: 11 } }, grid: { display: false } },
+          y: { beginAtZero: unidad !== 'V', ticks: { color: '#5B6670', font: { size: 11 },
+                 callback: (v) => fmt(v, unidad === 'A' ? 2 : 1) + ' ' + unidad }, grid: { color: '#E8E4DC' } }
+        }
+      }
+    });
+  }
+  const chI = crearGrafica('chI', 'Corriente', '#E07A1F', 'rgba(224,122,31,.12)', 'A',
+    [['Alarma', '#B85F0E'], ['Corte', '#C0392B']]);
+  const chV = crearGrafica('chV', 'Voltaje', '#2F7DD1', 'rgba(47,125,209,.10)', 'V',
+    [['V mín', '#B85F0E'], ['V máx', '#C0392B']]);
+  const chP = crearGrafica('chP', 'Potencia', '#14202B', 'rgba(20,32,43,.08)', 'W', []);
+
+  function redibujar() {
+    if (pausado) return;
+    const n = Math.min(ventana, serie.t.length);
+    const desde = serie.t.length - n;
+    const labels = serie.t.slice(desde);
+    const llenar = (val) => labels.map(() => val);
+    chI.data.labels = labels; chI.data.datasets[0].data = serie.i.slice(desde);
+    chV.data.labels = labels; chV.data.datasets[0].data = serie.v.slice(desde);
+    chP.data.labels = labels; chP.data.datasets[0].data = serie.p.slice(desde);
+    if (config) {
+      chI.data.datasets[1].data = llenar(config.iAlarma); chI.data.datasets[2].data = llenar(config.iCorte);
+      chV.data.datasets[1].data = llenar(config.vMin);    chV.data.datasets[2].data = llenar(config.vMax);
+    }
+    chI.update('none'); chV.update('none'); chP.update('none');
+    const ps = serie.p.slice(desde);
+    $('kPx').textContent = 'Promedio (ventana): ' + (ps.length ? fmt(ps.reduce((a, b) => a + b, 0) / ps.length, 2) + ' W' : '—');
+  }
+
+  $('segWin').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    ventana = +b.dataset.w;
+    [...$('segWin').children].forEach((x) => x.classList.toggle('act', x === b));
+    redibujar();
+  });
+  $('btnPausa').addEventListener('click', () => {
+    pausado = !pausado;
+    $('btnPausa').textContent = pausado ? 'Reanudar' : 'Pausar';
+    if (!pausado) redibujar();
+  });
+
+  // ---------- Pintar datos ----------
+  function setDot(id, cls, txt, tid) { $(id).className = 'dot ' + cls; $(tid).textContent = txt; }
+
+  function onDatos(d) {
+    ultimoDato = Date.now(); ultimo = d;
+    const v = +d.v, i = +d.i, p = +d.p;
+    serie.t.push(hora()); serie.v.push(v); serie.i.push(i); serie.p.push(p);
+    if (serie.t.length > MAX_PUNTOS) Object.values(serie).forEach((a) => a.shift());
+
+    $('kV').textContent = fmt(v, 2);
+    $('kI').textContent = fmt(i, 3);
+    $('kP').textContent = fmt(p, 2);
+    $('kE').textContent = fmt(+d.e, 3);
+    $('kIx').textContent = 'Máx. registrada: ' + fmt(+d.imax, 3) + ' A';
+    $('kEx').textContent = 'Carga: ' + (d.carga ? 'habilitada' : 'deshabilitada');
+    $('cRssi').textContent = d.rssi != null ? `WiFi: ${d.rssi} dBm` : 'WiFi: —';
+    setDot('dEquipo', 'on', 'Equipo: en línea', 'tEquipo');
+
+    const est = d.estado || 'NORMAL';
+    $('banner').className = 'banner ' + est;
+    $('estTag').textContent = est;
+    $('estWhy').textContent = d.sensor === false ? 'Sensor INA219 no detectado: revise el cableado.'
+      : est === 'NORMAL' ? 'Todos los valores dentro de los límites.'
+      : est === 'ALARMA' ? `Alarma: ${d.motivo}. La carga sigue conectada.`
+      : `Corte por ${String(d.motivo || '').toLowerCase()}. Carga desconectada hasta rearmar.`;
+    $('btnRearmar').disabled = est !== 'CORTE';
+    $('btnSilenciar').disabled = est === 'NORMAL';
+    redibujar();
+  }
+
+  function onConfig(c) {
+    config = c;
+    const map = [['inIa', 'cIa', c.iAlarma, 2], ['inIc', 'cIc', c.iCorte, 2], ['inVmin', 'cVmin', c.vMin, 1], ['inVmax', 'cVmax', c.vMax, 1]];
+    for (const [inp, cur, val, d] of map) {
+      $(cur).textContent = 'actual: ' + fmt(val, d);
+      if (document.activeElement !== $(inp)) $(inp).value = val;
+    }
+    $('kVx').textContent = `Límites: ${fmt(c.vMin, 1)} – ${fmt(c.vMax, 1)} V`;
+    if (c.iMaxSensor) { $('inIa').max = c.iMaxSensor; $('inIc').max = c.iMaxSensor; }
+    redibujar();
+  }
+
+  function onEvento(ev) {
+    const ul = $('log');
+    const vacio = ul.querySelector('.empty'); if (vacio) vacio.remove();
+    const li = document.createElement('li');
+    const tipo = String(ev.tipo || 'info').toLowerCase();
+    li.innerHTML = `<span class="badge ${tipo}"></span><span class="t"></span><span class="m"></span>`;
+    li.children[0].textContent = tipo;
+    li.children[1].textContent = hora();
+    const extra = ev.i != null ? ` (I = ${fmt(+ev.i, 3)} A, V = ${fmt(+ev.v, 2)} V)` : '';
+    li.children[2].textContent = (ev.msg || '') + extra;
+    ul.prepend(li);
+    while (ul.children.length > 60) ul.lastChild.remove();
+    if (tipo === 'corte' || tipo === 'alarma' || tipo === 'error') toast(`${tipo.toUpperCase()}: ${ev.msg}`);
+  }
+
+  function onMensaje(sub, texto) {
+    if (sub === 'estado') {
+      const on = texto === 'online';
+      setDot('dEquipo', on ? 'on' : 'off', on ? 'Equipo: en línea' : 'Equipo: desconectado', 'tEquipo');
+      if (!on) onEvento({ tipo: 'conexion', msg: 'El medidor se desconectó del broker' });
+      return;
+    }
+    let j; try { j = JSON.parse(texto); } catch { return; }
+    if (sub === 'datos') onDatos(j);
+    else if (sub === 'config') onConfig(j);
+    else if (sub === 'evento') onEvento(j);
+  }
+
+  // Si dejan de llegar datos
+  setInterval(() => {
+    if ((client || demo) && ultimoDato && Date.now() - ultimoDato > 5000) {
+      setDot('dEquipo', 'wait', 'Equipo: sin datos', 'tEquipo');
+    }
+  }, 1000);
+
+  // ---------- MQTT ----------
+  function enviar(cmd) {
+    if (demo) return demo.comando(cmd);
+    if (!client || !client.connected) { toast('No hay conexión con el broker.'); return false; }
+    client.publish(base + '/cmd', JSON.stringify(cmd), { qos: 1 });
+    toast('Comando enviado: ' + cmd.accion);
+    return true;
+  }
+
+  function desconectar() {
+    if (client) { client.end(true); client = null; }
+    if (demo) { demo.parar(); demo = null; }
+    setDot('dBroker', 'off', 'Broker: desconectado', 'tBroker');
+    setDot('dEquipo', '', 'Equipo: sin datos', 'tEquipo');
+    $('btnConn').textContent = 'Conectar';
+    $('btnDemo').disabled = false;
+    $('connHint').textContent = '— configure el broker y el ID del equipo';
+  }
+
+  function conectar() {
+    $('connErr').textContent = '';
+    const url = $('inUrl').value.trim(), id = $('inId').value.trim();
+    if (!/^wss?:\/\//.test(url)) { $('connErr').textContent = 'La dirección debe empezar por wss:// o ws://'; return; }
+    if (!/^[A-Za-z0-9_\-]{3,40}$/.test(id)) { $('connErr').textContent = 'El ID debe tener de 3 a 40 letras, números, - o _'; return; }
+    if (typeof mqtt === 'undefined') { $('connErr').textContent = 'No se cargó la librería MQTT. Revise su internet y recargue.'; return; }
+    store.set('md_url', url); store.set('md_id', id); actualizarBase();
+
+    setDot('dBroker', 'wait', 'Broker: conectando…', 'tBroker');
+    client = mqtt.connect(url, {
+      clientId: 'web-' + Math.random().toString(16).slice(2, 10),
+      clean: true, reconnectPeriod: 3000, connectTimeout: 10000
+    });
+    client.on('connect', () => {
+      setDot('dBroker', 'on', 'Broker: conectado', 'tBroker');
+      $('btnConn').textContent = 'Desconectar'; $('btnDemo').disabled = true;
+      $('connHint').textContent = '— conectado a ' + base;
+      client.subscribe(base + '/#', { qos: 1 });
+      onEvento({ tipo: 'conexion', msg: 'Página conectada al broker' });
+      $('panelConn').open = false;
+    });
+    client.on('reconnect', () => setDot('dBroker', 'wait', 'Broker: reconectando…', 'tBroker'));
+    client.on('offline', () => setDot('dBroker', 'off', 'Broker: sin conexión', 'tBroker'));
+    client.on('error', (e) => { $('connErr').textContent = 'Error MQTT: ' + e.message; });
+    client.on('message', (topic, payload) => {
+      if (topic.startsWith(base + '/')) onMensaje(topic.slice(base.length + 1), payload.toString());
+    });
+  }
+
+  $('btnConn').addEventListener('click', () => (client || demo) ? desconectar() : conectar());
+
+  // ---------- Botones de control ----------
+  $('btnRearmar').addEventListener('click', () => enviar({ accion: 'rearmar' }));
+  $('btnSilenciar').addEventListener('click', () => enviar({ accion: 'silenciar' }));
+  $('btnCargaOn').addEventListener('click', () => enviar({ accion: 'carga', on: true }));
+  $('btnCargaOff').addEventListener('click', () => enviar({ accion: 'carga', on: false }));
+  $('btnResetE').addEventListener('click', () => enviar({ accion: 'reset_energia' }));
+
+  const limitesInputs = ['inIa', 'inIc', 'inVmin', 'inVmax'];
+  limitesInputs.forEach((id) => $(id).addEventListener('input', () => { $('limErr').textContent = ''; }));
+  $('formLim').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const [ia, ic, vmin, vmax] = limitesInputs.map((id) => parseFloat($(id).value.replace(',', '.')));
+    let err = '';
+    if ([ia, ic, vmin, vmax].some(isNaN)) err = 'Complete los cuatro valores.';
+    else if (!(ia > 0 && ia < ic)) err = 'La alarma de corriente debe ser mayor que 0 y menor que el corte.';
+    else if (ic > (config && config.iMaxSensor ? config.iMaxSensor : 3.2)) err = `El corte no puede superar ${fmt(config && config.iMaxSensor ? config.iMaxSensor : 3.2, 2)} A (rango del sensor).`;
+    else if (!(vmin >= 0 && vmin < vmax)) err = 'El voltaje mínimo debe ser menor que el máximo.';
+    else if (vmax > 26) err = 'El voltaje máximo no puede superar 26 V (límite del INA219).';
+    if (err) { $('limErr').textContent = err; return; }
+    enviar({ accion: 'limites', iAlarma: ia, iCorte: ic, vMin: vmin, vMax: vmax });
+  });
+
+  // ---------- Modo demo (simula el ESP32) ----------
+  function crearDemo() {
+    const s = { estado: 'NORMAL', motivo: '', carga: true, e: 0, imax: 0, silenciado: false,
+      lim: { iAlarma: 2.5, iCorte: 3.0, vMin: 10, vMax: 14 }, iObj: 0.8, iAct: 0.8, t: 0 };
+    const pubConfig = () => onConfig({ ...s.lim, carga: s.carga });
+    const evento = (tipo, msg, i, v) => onEvento({ tipo, msg, i, v });
+    pubConfig();
+    const timer = setInterval(() => {
+      s.t++;
+      if (s.t % 12 === 0) s.iObj = [0.1, 0.26, 0.55, 1.0, 1.8, 2.6, 0.8][Math.floor(Math.random() * 7)];
+      if (s.t % 45 === 0) s.iObj = 3.1;     // provoca un corte de vez en cuando
+      s.iAct += (s.iObj - s.iAct) * 0.35;
+      const conectada = s.carga && s.estado !== 'CORTE';
+      const i = conectada ? Math.max(0, s.iAct + (Math.random() - 0.5) * 0.03) : 0;
+      const v = 12.1 - 0.12 * i + (Math.random() - 0.5) * 0.04;
+      const p = v * i;
+      s.e += p / 3600; if (i > s.imax) s.imax = i;
+      if (s.estado !== 'CORTE') {
+        if (i >= s.lim.iCorte) { s.estado = 'CORTE'; s.motivo = 'Sobrecorriente'; evento('corte', 'Sobrecorriente', i, v); s.iObj = 0.8; }
+        else if (v >= s.lim.vMax) { s.estado = 'CORTE'; s.motivo = 'Sobrevoltaje'; evento('corte', 'Sobrevoltaje', i, v); }
+        else if (s.estado === 'NORMAL' && (i >= s.lim.iAlarma || (v > 1 && v < s.lim.vMin))) {
+          s.estado = 'ALARMA'; s.motivo = i >= s.lim.iAlarma ? 'Corriente alta' : 'Voltaje bajo'; evento('alarma', s.motivo, i, v);
+        } else if (s.estado === 'ALARMA' && i < s.lim.iAlarma * 0.95 && (v <= 1 || v > s.lim.vMin * 1.02)) {
+          s.estado = 'NORMAL'; s.motivo = ''; evento('normal', 'Valores normales', i, v);
+        }
+      }
+      onDatos({ v, i, p, e: s.e, imax: s.imax, estado: s.estado, motivo: s.motivo, carga: s.carga,
+        sensor: true, rssi: -55 - Math.round(Math.random() * 8) });
+    }, 1000);
+    return {
+      parar: () => clearInterval(timer),
+      comando(c) {
+        if (c.accion === 'rearmar' && s.estado === 'CORTE') { s.estado = 'NORMAL'; s.motivo = ''; evento('rearme', 'Sistema rearmado'); }
+        else if (c.accion === 'silenciar') { s.silenciado = true; toast('Buzzer silenciado (demo)'); }
+        else if (c.accion === 'carga') { s.carga = !!c.on; evento('carga', s.carga ? 'Carga habilitada' : 'Carga deshabilitada'); pubConfig(); }
+        else if (c.accion === 'reset_energia') { s.e = 0; s.imax = 0; evento('info', 'Energía y corriente máxima reiniciadas'); }
+        else if (c.accion === 'limites') { s.lim = { iAlarma: c.iAlarma, iCorte: c.iCorte, vMin: c.vMin, vMax: c.vMax }; evento('config', 'Límites actualizados desde la web'); pubConfig(); }
+        return true;
+      }
+    };
+  }
+
+  $('btnDemo').addEventListener('click', () => {
+    if (client) return;
+    demo = crearDemo();
+    setDot('dBroker', 'wait', 'Broker: modo demo', 'tBroker');
+    $('btnConn').textContent = 'Salir del demo';
+    $('btnDemo').disabled = true;
+    $('connHint').textContent = '— modo demo: datos simulados, sin hardware';
+    onEvento({ tipo: 'info', msg: 'Modo demo iniciado: los datos son simulados' });
+    $('panelConn').open = false;
+  });
+})();
+</script>
+</body>
+</html>
