@@ -1,4 +1,5 @@
 #include "Calibration.h"
+#include "formato_si.h"
 #include <Preferences.h>
 
 namespace {
@@ -68,8 +69,8 @@ bool CalibradorINA219::iniciar(INA219Simple &ina, TwoWire &wire, RangoINA219 ran
 
   bool calOk = false;
   _cal = cargarDeMemoria(_shuntNominal, &calOk);
-  Serial.printf("INA219 OK en 0x%02X | rango ±%.0f mV (%.0f mA) | R shunt = %.6f ohm | offset = %+.4f mV | kV = %.5f%s\n",
-                ina.direccion(), _rango_mV, rangoMax_mA(), _cal.rShunt_ohm, _cal.offset_mV, _cal.kV,
+  Serial.printf("INA219 OK en 0x%02X | rango ±%.0f mV (%s) | R shunt = %.6f ohm | offset = %+.4f mV | kV = %.5f%s\n",
+                ina.direccion(), _rango_mV, formatoSI(rangoMax_mA()/1000.0f, "A").c_str(), _cal.rShunt_ohm, _cal.offset_mV, _cal.kV,
                 calOk ? "" : "  [SIN CALIBRAR: valores nominales]");
   return true;
 }
@@ -96,11 +97,12 @@ LecturaCalibrada CalibradorINA219::leer(INA219Simple &ina) {
   l.valida                = true;
   l.saturada              = m.saturada || m.overflow;
   l.voltajeShunt_mV       = m.shunt_mV;
-  l.voltajeBus_V          = m.bus_V * _cal.kV;
+  l.voltajeCarga_V = m.bus_V * _cal.kV;
+  l.voltajeBus_V = l.voltajeCarga_V + m.shunt_mV / 1000.0f;
   l.corrienteCruda_mA     = m.shunt_mV / _shuntNominal;
   l.corrienteCalibrada_mA = (m.shunt_mV - _cal.offset_mV) / _cal.rShunt_ohm;
   if (fabsf(l.corrienteCalibrada_mA) < CORRIENTE_RUIDO_mA) l.corrienteCalibrada_mA = 0;
-  l.potencia_mW           = l.voltajeBus_V * l.corrienteCalibrada_mA;   // V × mA = mW
+  l.potencia_mW           = l.voltajeCarga_V * l.corrienteCalibrada_mA;   // V × mA = mW
 
   if (l.saturada) {
     l.hayAlerta = true;
@@ -125,7 +127,7 @@ bool CalibradorINA219::hacerCero(INA219Simple &ina) {
   }
   float off = suma / validas;
   if (fabsf(off) > 0.5f) {
-    Serial.printf("Cero RECHAZADO: %.3f mV (= %.1f mA). ¿Sigue pasando corriente?\n", off, off / _shuntNominal);
+    Serial.printf("Cero RECHAZADO: %.3f mV (= %s). ¿Sigue pasando corriente?\n", off, formatoSI(off / _shuntNominal / 1000.0f, "A").c_str());
     return false;
   }
   _cal.offset_mV = off;
