@@ -20,6 +20,7 @@
 #include "Calibration.h"
 #include "hardware_config.h"
 #include "secrets.h"
+#include "formato_si.h"
 
 // =============================================================
 //  1) CONFIGURACIÓN
@@ -67,7 +68,7 @@ uint32_t tLectura = 0, tImpresion = 0, tReintentoSensor = 0, tUltimaLectura = 0;
 
 // --- Instantánea compartida loop() -> tareaRed ---
 struct Instantanea {
-  float v, i, p, imax;
+  float v, vCarga, i, p, imax;
   double eWh;
   Estado estado;
   char motivo[48];
@@ -82,7 +83,7 @@ volatile bool configCambiada = true;
 // --- Colas ---
 enum TipoComando : uint8_t { CMD_LIMITES, CMD_REARMAR, CMD_SILENCIAR, CMD_CARGA, CMD_RESET_ENERGIA };
 struct Comando { TipoComando tipo; float iAlarma, iCorte, vMin, vMax; bool on; };
-struct Evento  { char tipo[12]; char msg[96]; float v, i; };
+struct Evento  { char tipo[12]; char msg[96]; float v, vCarga, i; };
 QueueHandle_t colaComandos;   // tareaRed -> loop()
 QueueHandle_t colaEventos;    // loop()   -> tareaRed
 
@@ -99,11 +100,12 @@ const char *estadoTexto(Estado e) {
 }
 
 void publicarEvento(const char *tipo, const char *msg) {
-  Serial.printf("[EVENTO] %s: %s (V=%.2f V, I=%.3f A)\n", tipo, msg, V, I);
+  Serial.printf("[EVENTO] %s: %s (Bus=%.3f V, Carga=%.3f V, I=%s)\n", tipo, msg, lec.voltajeBus_V, V, formatoSI(I, "A").c_str());
   Evento ev;
   strlcpy(ev.tipo, tipo, sizeof(ev.tipo));
   strlcpy(ev.msg, msg, sizeof(ev.msg));
-  ev.v = V;
+  ev.v = lec.voltajeBus_V;
+  ev.vCarga = V;
   ev.i = I;
   xQueueSend(colaEventos, &ev, 0);   // si la cola está llena se descarta (no bloquea)
 }
@@ -115,7 +117,8 @@ void aplicarCarga() {
 
 void actualizarInstantanea() {
   portENTER_CRITICAL(&muxInstantanea);
-  instantanea.v = V;
+  instantanea.v = lec.voltajeBus_V;
+  instantanea.vCarga = V;
   instantanea.i = I;
   instantanea.p = P;
   instantanea.imax = iMax;
@@ -233,8 +236,8 @@ void ejecutarComando(const Comando &c) {
         publicarEvento("config", "Límites actualizados");
       } else {
         char m[96];
-        snprintf(m, sizeof(m), "Límites rechazados: alarma < corte <= %.2f A y Vmin < Vmax <= %.0f V",
-                 iMaxSensor_A, V_MAX_INA219);
+        snprintf(m, sizeof(m), "Límites rechazados: alarma < corte <= %s y Vmin < Vmax <= %.0f V",
+                 formatoSI(iMaxSensor_A, "A").c_str(), V_MAX_INA219);
         publicarEvento("error", m);
       }
       configCambiada = true;
@@ -298,9 +301,9 @@ void revisarSerie() {
       c.on = strcmp(linea, "carga on") == 0;
       ejecutarComando(c);
     } else if (strcmp(linea, "estado") == 0) {
-      Serial.printf("Estado %s | %s | carga %s | sensor %s | límites: %.2f/%.2f A, %.1f-%.1f V | rango %.2f A\n",
+      Serial.printf("Estado %s | %s | carga %s | sensor %s | límites: %s/%s, %.1f-%.1f V | rango %s\n",
                     estadoTexto(estado), motivo, cargaHabilitada ? "ON" : "OFF",
-                    calibrador.sensorOk() ? "OK" : "FALLA", lim.iAlarma, lim.iCorte, lim.vMin, lim.vMax, iMaxSensor_A);
+                    calibrador.sensorOk() ? "OK" : "FALLA", formatoSI(lim.iAlarma, "A").c_str(), formatoSI(lim.iCorte, "A").c_str(), lim.vMin, lim.vMax, formatoSI(iMaxSensor_A, "A").c_str());
     } else {
       Serial.println("Comandos: estado | lim <iA> <iC> <vMin> <vMax> | rearmar | cero | carga on | carga off");
     }
@@ -364,8 +367,9 @@ void publicarDatos() {
   Instantanea s = copiarInstantanea();
   JsonDocument doc;
   doc["v"]      = serialized(String(s.v, 3));
-  doc["i"]      = serialized(String(s.i, 4));
-  doc["p"]      = serialized(String(s.p, 3));
+  doc["vCarga"] = s.vCarga;
+  doc["i"]      = s.i;
+  doc["p"]      = s.p;
   doc["e"]      = serialized(String(s.eWh, 4));
   doc["imax"]   = serialized(String(s.imax, 4));
   doc["estado"] = estadoTexto(s.estado);
@@ -386,7 +390,8 @@ void publicarEventosPendientes() {
     doc["tipo"] = ev.tipo;
     doc["msg"]  = ev.msg;
     doc["v"]    = serialized(String(ev.v, 3));
-    doc["i"]    = serialized(String(ev.i, 4));
+    doc["vCarga"] = ev.vCarga;
+    doc["i"]    = ev.i;
     char buf[256];
     size_t n = serializeJson(doc, buf, sizeof(buf));
     mqtt.publish(tEvento.c_str(), (const uint8_t *)buf, n, false);
@@ -471,7 +476,7 @@ void medir() {
   lec = calibrador.leer(ina);
   uint32_t ahora = millis();
   if (lec.valida) {
-    V = lec.voltajeBus_V;
+    V = lec.voltajeCarga_V;
     I = lec.corrienteCalibrada_mA / 1000.0f;
     P = lec.potencia_mW / 1000.0f;
     if (I > iMax) iMax = I;
@@ -484,9 +489,9 @@ void medir() {
 }
 
 void imprimir() {
-  Serial.printf("V_bus: %6.3f V | V_shunt: %7.3f mV | I_cruda: %8.2f mA | I_cal: %8.2f mA | P: %8.1f mW | %s",
-                lec.voltajeBus_V, lec.voltajeShunt_mV, lec.corrienteCruda_mA,
-                lec.corrienteCalibrada_mA, lec.potencia_mW, estadoTexto(estado));
+  Serial.printf("V_bus: %6.3f V | V_carga: %6.3f V | V_shunt: %7.3f mV | I_cruda: %s | I_cal: %s | P: %s | %s",
+                lec.voltajeBus_V, V, lec.voltajeShunt_mV, formatoSI(lec.corrienteCruda_mA / 1000.0f, "A").c_str(),
+                formatoSI(I, "A").c_str(), formatoSI(P, "W").c_str(), estadoTexto(estado));
   if (motivo[0]) Serial.printf(" (%s)", motivo);
   if (!cargaHabilitada) Serial.print(" | carga OFF");
   Serial.println();
@@ -523,8 +528,8 @@ void setup() {
   intentarIniciarSensor();
   tReintentoSensor = millis();
 
-  Serial.printf("Tópico MQTT: %s | Límites: alarma %.2f A, corte %.2f A, V %.1f-%.1f V | rango %.2f A\n",
-                base.c_str(), lim.iAlarma, lim.iCorte, lim.vMin, lim.vMax, iMaxSensor_A);
+  Serial.printf("Tópico MQTT: %s | Límites: alarma %s, corte %s, V %.1f-%.1f V | rango %s\n",
+                base.c_str(), formatoSI(lim.iAlarma, "A").c_str(), formatoSI(lim.iCorte, "A").c_str(), lim.vMin, lim.vMax, formatoSI(iMaxSensor_A, "A").c_str());
   Serial.println("Escribe 'ayuda' para ver los comandos del monitor serie.");
 
   actualizarInstantanea();

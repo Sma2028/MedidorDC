@@ -10,6 +10,7 @@
 //  DESCONECTADA; usa "k" para conectarla.
 // =============================================================
 #include <Arduino.h>
+#include "formato_si.h"
 #include <Wire.h>
 #include "INA219Simple.h"
 #include "Calibration.h"
@@ -87,16 +88,17 @@ void imprimirMedida(const Medida &m) {
   if (!m.ok) { Serial.println("Sin lectura válida."); return; }
   float i = corrienteCal_mA(m.vsh_mV);
   float v = voltajeCal(m.vbus_V);
-  Serial.printf("Vcarga=%7.3f V | Vshunt=%8.3f mV | I=%8.2f mA (sin cal: %8.2f mA) | P=%8.1f mW | carga %s\n",
-                v, m.vsh_mV, i, corrienteNom_mA(m.vsh_mV), v * i, cargaOn ? "ON" : "OFF");
+  Serial.printf("Vbus=%7.3f V | Vcarga=%7.3f V | Vshunt=%8.3f mV | I=%s (sin cal: %s) | P=%s | carga %s\n",
+                v + m.vsh_mV / 1000.0f, v, m.vsh_mV, formatoSI(i / 1000.0f, "A").c_str(),
+                formatoSI(corrienteNom_mA(m.vsh_mV) / 1000.0f, "A").c_str(), formatoSI(v * i / 1000.0f, "W").c_str(), cargaOn ? "ON" : "OFF");
 }
 
 void mostrarCal() {
   Serial.println("------ Calibración activa ------");
-  Serial.printf("  Rango            : ±%.0f mV en el shunt = %.0f mA\n", ina.rangoShunt_mV(), rangoMax_mA);
+  Serial.printf("  Rango            : ±%.0f mV en el shunt = %s\n", ina.rangoShunt_mV(), formatoSI(rangoMax_mA / 1000.0f, "A").c_str());
   Serial.printf("  R shunt efectiva : %.6f ohm (nominal %.3f, diferencia %+.2f %%)\n",
                 cal.rShunt_ohm, SHUNT_NOMINAL_OHM, (cal.rShunt_ohm / SHUNT_NOMINAL_OHM - 1) * 100);
-  Serial.printf("  Offset del shunt : %+.4f mV (= %+.2f mA)\n", cal.offset_mV, cal.offset_mV / cal.rShunt_ohm);
+  Serial.printf("  Offset del shunt : %+.4f mV (= %s)\n", cal.offset_mV, formatoSI(cal.offset_mV / cal.rShunt_ohm / 1000.0f, "A").c_str());
   Serial.printf("  Factor de voltaje: %.5f\n", cal.kV);
   Serial.printf("  Puntos tomados   : %d de corriente, %d de voltaje | carga %s\n", nI, nV, cargaOn ? "ON" : "OFF");
   Serial.println("--------------------------------");
@@ -128,8 +130,8 @@ void calcular() {
       float ir = puntosI[k].iRef;
       float in = corrienteNom_mA(puntosI[k].vsh_mV) / 1000.0f;
       float ic = corrienteCal_mA(puntosI[k].vsh_mV) / 1000.0f;
-      Serial.printf("  %d   %9.4f A   %8.4f A  %+6.2f%%   %9.4f A  %+6.2f%%\n",
-                    k + 1, ir, in, (in / ir - 1) * 100, ic, (ic / ir - 1) * 100);
+      Serial.printf("  %d   %12s   %12s  %+6.2f%%   %12s  %+6.2f%%\n",
+                    k + 1, formatoSI(ir, "A").c_str(), formatoSI(in, "A").c_str(), (in / ir - 1) * 100, formatoSI(ic, "A").c_str(), (ic / ir - 1) * 100);
     }
   }
   if (nV > 0) {
@@ -215,8 +217,8 @@ void procesar(char *cmd) {
       ponerCarga(estaba);
       if (!m.ok) { Serial.println("ERROR de lectura."); break; }
       if (fabsf(m.vsh_mV) > 0.5f) {
-        Serial.printf("RECHAZADO: %.3f mV (%.1f mA) sin carga. ¿Hay otro camino de corriente?\n",
-                      m.vsh_mV, m.vsh_mV / SHUNT_NOMINAL_OHM);
+        Serial.printf("RECHAZADO: %.3f mV (%s) sin carga. ¿Hay otro camino de corriente?\n",
+                      m.vsh_mV, formatoSI(m.vsh_mV / SHUNT_NOMINAL_OHM / 1000.0f, "A").c_str());
         break;
       }
       cal.offset_mV = m.vsh_mV;
@@ -226,14 +228,14 @@ void procesar(char *cmd) {
     case 'i': {
       if (isnan(valor) || valor < 0.01f) { Serial.println("Uso: i 0.256  (amperios del multímetro, mínimo 0.01)"); break; }
       if (!cargaOn) { Serial.println("La carga está desconectada: usa 'k' primero."); break; }
-      if (valor * 1000.0f > rangoMax_mA) { Serial.printf("Ese valor supera el rango (%.0f mA).\n", rangoMax_mA); break; }
+      if (valor * 1000.0f > rangoMax_mA) { Serial.printf("Ese valor supera el rango (%s).\n", formatoSI(rangoMax_mA / 1000.0f, "A").c_str()); break; }
       if (nI >= MAX_PUNTOS) { Serial.println("Máximo de puntos alcanzado. 'b' para borrar."); break; }
       Serial.println("Midiendo punto de corriente...");
       Medida m = medir(MUESTRAS_PUNTO);
       if (!m.ok) { Serial.println("ERROR: lectura inválida o saturada."); break; }
       puntosI[nI++] = {m.vsh_mV, valor};
-      Serial.printf("Punto %d: multímetro = %.4f A | INA219 sin cal = %.4f A\n",
-                    nI, valor, corrienteNom_mA(m.vsh_mV) / 1000.0f);
+      Serial.printf("Punto %d: multímetro = %s | INA219 sin cal = %s\n",
+                    nI, formatoSI(valor, "A").c_str(), formatoSI(corrienteNom_mA(m.vsh_mV) / 1000.0f, "A").c_str());
       break;
     }
     case 'v': {

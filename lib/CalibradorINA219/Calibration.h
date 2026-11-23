@@ -32,6 +32,7 @@ struct CalibracionINA219 {
 struct LecturaCalibrada {
   bool  valida                = false;  // false = falló el I2C
   bool  saturada              = false;  // corriente fuera del rango del PGA
+  float voltajeCarga_V = 0;
   float voltajeBus_V          = 0;
   float voltajeShunt_mV       = 0;
   float corrienteCruda_mA     = 0;      // con R shunt nominal, sin calibrar
